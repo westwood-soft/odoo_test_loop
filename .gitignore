@@ -1,0 +1,17 @@
+*.egg-info
+*.pyc
+*.pyo
+.DS_Store
+.cache
+.coverage*
+.direnv
+.envrc
+.mypy_cache
+.pytest_cache
+.tox
+.vscode
+build
+dist
+htmlcov
+tmp
+Justfile
