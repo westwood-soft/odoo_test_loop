@@ -1,7 +1,7 @@
 # Odoo Test Loop
 
-[![PyPI - Version](https://img.shields.io/pypi/v/modoole-test.svg)](https://pypi.org/project/modoole-test)
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/modoole-test.svg)](https://pypi.org/project/modoole-test)
+[![PyPI - Version](https://img.shields.io/pypi/v/odoo_test_loop.svg)](https://pypi.org/project/odoo_test_loop)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/odoo_test_loop.svg)](https://pypi.org/project/odoo_test_loop)
 
 -----
 

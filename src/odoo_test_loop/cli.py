@@ -97,6 +97,8 @@ def cli(
                     if not test.__class__._classSetupFailed:
                         test(result)
                     progress.update(task, advance=1)
+                    if failfast and not result.wasSuccessful():
+                        break
 
             self._tearDownPreviousClass(None, result)
             return result
