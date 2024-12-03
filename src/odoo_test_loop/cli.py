@@ -1,5 +1,8 @@
+import importlib
 import logging
 import odoo
+import os
+import sys
 import threading
 import time
 import typer
@@ -24,18 +27,29 @@ to_repeat = []
 
 
 class TestFileChangeHandler(FileSystemEventHandler):
-    def __init__(self, rerun_tests, command):
+    def __init__(self, rerun_tests, command, delay=5):
         self.rerun_tests = rerun_tests
         self.command = command
+        self.delay = delay
+        self.last_event_time = 0
 
     def on_modified(self, event):
         if event.src_path.endswith(".py"):
+            console.log(f"File changed: {event.src_path}.")
+            filename_with_ext = os.path.basename(event.src_path)
+            filename, _ = os.path.splitext(filename_with_ext)
+            modules = [name for name in sys.modules if name.endswith(filename)]
+            for module in modules:
+                console.print(f"Reloading module {module}.")
+                importlib.reload(sys.modules[module])
+            current_time = time.time()
+            if current_time - self.last_event_time <= self.delay:
+                return
             global rerun_requested
             with rerun_requested_lock:
                 rerun_requested = True
-            console.print(f"File changed: {event.src_path}.")
-            console.print("Rerunning tests...")
-            self.rerun_tests(self.command)
+
+            self.last_event_time = current_time
 
 
 def _odoo_database_callback(ctx: typer.Context, value: str):
@@ -58,14 +72,13 @@ def cli(
     if odoo_database == "":
         odoo_database = f"test_{module_name}"
 
-    options = [f"--test-tags={module_name}", f"--config={odoo_config}"]
+    options = [f"--config={odoo_config}"]
     for param_name, param_value in ctx.params.items():
         if param_name.startswith("odoo_"):
             options.append(f"--{param_name[5:].replace('_', '-')}={param_value}")
 
-    logging.disable(logging.CRITICAL)
+    # logging.disable(logging.CRITICAL)
     odoo.tools.config.parse_config(options)
-
     odoo.service.server.start(preload=[], stop=True)
 
     from odoo.tests import loader
@@ -103,15 +116,17 @@ def cli(
             self._tearDownPreviousClass(None, result)
             return result
 
-    def make_suite(module_names, position="at_install"):
+    def make_suite(module_names, position="at_install", include_tests=[]):
         """Creates a test suite for all the tests in the specified modules,
         filtered by the provided ``position`` and the current test tags
 
         :param list[str] module_names: modules to load tests from
         :param str position: "at_install" or "post_install"
+        :param list[str] include_tests: specific tests to include
         """
 
-        config_tags = TagsSelector(odoo.tools.config["test_tags"])
+        console.print(f"Modules: {" ".join(module_names)}")
+        config_tags = TagsSelector(module_name)
         position_tag = TagsSelector(position)
         tests = (
             t
@@ -120,6 +135,8 @@ def cli(
             for t in loader.get_module_test_cases(m)
             if position_tag.check(t) and config_tags.check(t)
         )
+        if include_tests:
+            tests = [t for t in tests if t.id() in include_tests]
         return ProgressOdooSuite(sorted(tests, key=lambda t: t.test_sequence))
 
     def run_tests(command):
@@ -131,7 +148,9 @@ def cli(
 
         results = TestResult()
         if command == "f" and to_repeat:
-            suite_failed = ProgressOdooSuite(to_repeat)
+            suite_failed = make_suite(
+                [module_name], include_tests=[test.id() for test in to_repeat]
+            )
             suite_failed(results)
         else:
             suite = make_suite([module_name])
@@ -166,6 +185,10 @@ def cli(
         while True:
             try:
                 time.sleep(1)
+                global rerun_requested
+                if rerun_requested:
+                    time.sleep(1)
+                    run_tests(command)
             except KeyboardInterrupt:
                 break
         observer.join()
