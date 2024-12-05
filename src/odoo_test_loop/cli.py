@@ -8,13 +8,16 @@ import time
 import typer
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.progress import (
     MofNCompleteColumn,
     Progress,
     TextColumn,
     BarColumn,
+    SpinnerColumn,
     TimeElapsedColumn,
 )
+from rich.table import Table
 from typing_extensions import Annotated
 from unittest import TestCase, TestResult
 from watchdog.observers import Observer
@@ -23,6 +26,7 @@ from watchdog.events import FileSystemEventHandler
 console = Console()
 rerun_requested = False
 rerun_requested_lock = threading.Lock()
+reload_odoo_module = False
 to_repeat = []
 
 
@@ -34,11 +38,14 @@ class TestFileChangeHandler(FileSystemEventHandler):
         self.last_event_time = 0
 
     def on_modified(self, event):
+        global reload_odoo_module
         if event.src_path.endswith(".py"):
-            console.log(f"File changed: {event.src_path}.")
+            console.print(f"File changed: {event.src_path}.")
             filename_with_ext = os.path.basename(event.src_path)
             filename, _ = os.path.splitext(filename_with_ext)
-            modules = [name for name in sys.modules if name.endswith(filename)]
+            if not filename.startswith("test_"):
+                reload_odoo_module = True
+            modules = [name for name in sys.modules if name.endswith("." + filename)]
             for module in modules:
                 console.print(f"Reloading module {module}.")
                 importlib.reload(sys.modules[module])
@@ -46,10 +53,14 @@ class TestFileChangeHandler(FileSystemEventHandler):
             if current_time - self.last_event_time <= self.delay:
                 return
             global rerun_requested
+            global rerun_requested_lock
             with rerun_requested_lock:
                 rerun_requested = True
 
             self.last_event_time = current_time
+        elif event.src_path.endswith(".xml"):
+            console.print(f"File changed: {event.src_path}.")
+            reload_odoo_module = True
 
 
 def _odoo_database_callback(ctx: typer.Context, value: str):
@@ -66,7 +77,7 @@ def cli(
     failed_only: Annotated[bool, typer.Option()] = True,
     odoo_config: Annotated[str, typer.Option()] = "./config/odoo.conf",
     odoo_database: Annotated[str, typer.Option(callback=_odoo_database_callback)] = "",
-    odoo_log_level: Annotated[str, typer.Option()] = "info",
+    odoo_log_level: Annotated[str, typer.Option()] = "warn",
     ctx: typer.Context = typer.Option(None, hidden=True),
 ):
     if odoo_database == "":
@@ -77,13 +88,14 @@ def cli(
         if param_name.startswith("odoo_"):
             options.append(f"--{param_name[5:].replace('_', '-')}={param_value}")
 
-    # logging.disable(logging.CRITICAL)
     odoo.tools.config.parse_config(options)
-    odoo.service.server.start(preload=[], stop=True)
 
+    logging.disable(logging.CRITICAL)
     from odoo.tests import loader
     from odoo.tests.tag_selector import TagsSelector
     from odoo.tests.suite import OdooSuite
+
+    logging.disable(logging.NOTSET)
 
     class ProgressOdooSuite(OdooSuite):
         def run(self, result, debug=False):
@@ -91,18 +103,22 @@ def cli(
             with rerun_requested_lock:
                 rerun_requested = False
             with Progress(
-                TextColumn("[progress.description]{task.description}"),
+                TextColumn(":person_standing:"),
                 BarColumn(),
+                TextColumn(":person_running:"),
                 MofNCompleteColumn(),
                 TimeElapsedColumn(),
+                auto_refresh=False,
             ) as progress:
-                task = progress.add_task("Test", total=self.countTestCases())
+                task = progress.add_task("Testing", total=self.countTestCases())
                 for test in self:
                     with rerun_requested_lock:
                         if rerun_requested:
                             break
                     assert isinstance(test, (TestCase))
-                    progress.console.print(f"Running {test}")
+                    progress.console.print(
+                        f"[yellow]{test._testMethodName}[/yellow] from [yellow]{test.test_class}[/yellow]"
+                    )
                     self._tearDownPreviousClass(test, result)
                     self._handleClassSetUp(test, result)
                     result._previousTestClass = test.__class__
@@ -110,6 +126,7 @@ def cli(
                     if not test.__class__._classSetupFailed:
                         test(result)
                     progress.update(task, advance=1)
+                    progress.refresh()
                     if failfast and not result.wasSuccessful():
                         break
 
@@ -125,7 +142,6 @@ def cli(
         :param list[str] include_tests: specific tests to include
         """
 
-        console.print(f"Modules: {" ".join(module_names)}")
         config_tags = TagsSelector(module_name)
         position_tag = TagsSelector(position)
         tests = (
@@ -139,9 +155,27 @@ def cli(
             tests = [t for t in tests if t.id() in include_tests]
         return ProgressOdooSuite(sorted(tests, key=lambda t: t.test_sequence))
 
+    odoo.service.server.start(preload=[], stop=True)
+
     def run_tests(command):
         global to_repeat
+        global reload_odoo_module
+
         from odoo.modules import module
+
+        if reload_odoo_module:
+            console.print()
+            with Progress(
+                TextColumn(f"Reinstall module {module_name}."), SpinnerColumn()
+            ) as progress:
+                progress.add_task("Reinstall")
+                with odoo.modules.registry.Registry(odoo_database).cursor() as cr:
+                    env = odoo.api.Environment(cr, odoo.SUPERUSER_ID, {})
+                    up_module = env["ir.module.module"].search(
+                        [("name", "=", module_name)]
+                    )
+                    up_module.button_immediate_upgrade()
+            reload_odoo_module = False
 
         module.current_test = True
         threading.current_thread().testing = True
@@ -152,6 +186,10 @@ def cli(
                 [module_name], include_tests=[test.id() for test in to_repeat]
             )
             suite_failed(results)
+            if not results.errors and not results.failures:
+                suite = make_suite([module_name])
+                results = TestResult()
+                suite(results)
         else:
             suite = make_suite([module_name])
             suite(results)
@@ -174,6 +212,21 @@ def cli(
 
         threading.current_thread().testing = False
         module.current_test = False
+
+        if results.wasSuccessful():
+            console.print(
+                Panel.fit(
+                    "[bold green]All tests passed![/bold green]",
+                    title="Success :rocket:",
+                )
+            )
+        else:
+            console.print(
+                Panel.fit(
+                    f"[bold red]{len(results.errors)} Errors.[/bold red]\n[bold red]{len(results.failures)} Failures.[/bold red]",
+                    title="Failures :person_facepalming:",
+                )
+            )
 
     command = "f" if failed_only else "a"
     if watch:
