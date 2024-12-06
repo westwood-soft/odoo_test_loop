@@ -5,7 +5,8 @@
 
 -----
 
-Test your Odoo Module in a Test Loop.
+Test your Odoo Module in a Test Loop. 
+There is almost no overhead, as `Odoo Test Loop` uses the standard Odoo unittest test suites.
 
 ## Table of Contents
 
