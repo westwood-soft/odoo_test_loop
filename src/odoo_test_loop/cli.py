@@ -17,7 +17,6 @@ from rich.progress import (
     SpinnerColumn,
     TimeElapsedColumn,
 )
-from rich.table import Table
 from typing_extensions import Annotated
 from unittest import TestCase, TestResult
 from watchdog.observers import Observer
@@ -70,14 +69,22 @@ def _odoo_database_callback(ctx: typer.Context, value: str):
 
 
 def cli(
-    module_name: Annotated[str, typer.Argument()],
-    module_path: Annotated[str, typer.Argument()],
-    failfast: Annotated[bool, typer.Option()] = False,
-    watch: Annotated[bool, typer.Option()] = False,
-    failed_only: Annotated[bool, typer.Option()] = True,
-    odoo_config: Annotated[str, typer.Option()] = "./config/odoo.conf",
-    odoo_database: Annotated[str, typer.Option(callback=_odoo_database_callback)] = "",
-    odoo_log_level: Annotated[str, typer.Option()] = "warn",
+    module_name: Annotated[str, typer.Argument(help="Name of the module to test")],
+    module_path: Annotated[str, typer.Argument(help="Path to the module to test")],
+    failfast: Annotated[
+        bool, typer.Option(help="Stop test loop at the first failed test")
+    ] = False,
+    watch: Annotated[bool, typer.Option(help="Rerun tests on file changes")] = False,
+    failed_only: Annotated[
+        bool, typer.Option(help="Run only failed tests after first loop")
+    ] = True,
+    odoo_config: Annotated[
+        str, typer.Option(help="Path to odoo config file")
+    ] = "./config/odoo.conf",
+    odoo_database: Annotated[
+        str, typer.Option(help="Odoo Database name", callback=_odoo_database_callback)
+    ] = "",
+    odoo_log_level: Annotated[str, typer.Option(help="Log Level for Odoo")] = "warn",
     ctx: typer.Context = typer.Option(None, hidden=True),
 ):
     if odoo_database == "":
@@ -90,6 +97,7 @@ def cli(
 
     odoo.tools.config.parse_config(options)
 
+    # disable logging of import error message
     logging.disable(logging.CRITICAL)
     from odoo.tests import loader
     from odoo.tests.tag_selector import TagsSelector
